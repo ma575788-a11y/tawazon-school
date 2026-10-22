@@ -526,6 +526,47 @@ def admin_users():
                         execute('DELETE FROM teacher_classes WHERE teacher_id=?', (u['id'],))
                     st.success('تم تحديث الحساب.')
                     st.rerun()
+    st.markdown('#### 🗑️ حذف حساب')
+    st.caption('الحذف متاح للمديرة فقط. لا يمكن حذف حساب المديرة المستخدمة حاليًا، ولا حذف معلمة مرتبطة بحصص أو واجبات قبل معالجة ارتباطاتها.')
+    deletable = [u for u in users if u['id'] != st.session_state.get('user_id')]
+    if deletable:
+        delete_options = {f"{role_labels[u['role']]} — {u['full_name']} ({u['username']})": u for u in deletable}
+        delete_key = st.selectbox('اختاري الحساب المراد حذفه', list(delete_options), key='delete_user_choice')
+        target = delete_options[delete_key]
+        if target['role'] == 'teacher':
+            lesson_count = fetch('SELECT COUNT(*) n FROM timetable WHERE teacher_id=?', (target['id'],))[0]['n']
+            task_count = fetch('SELECT COUNT(*) n FROM tasks WHERE teacher_id=?', (target['id'],))[0]['n']
+            if lesson_count or task_count:
+                st.warning(f'لا يمكن حذف هذه المعلمة الآن؛ مرتبطة بـ {lesson_count} حصة و{task_count} واجب/اختبار. احذفي أو أعيدي إسناد هذه العناصر أولًا حتى لا يتأثر الجدول.')
+        st.warning(f"سيُحذف حساب: {target['full_name']} — {role_labels[target['role']]}.")
+        with st.form('confirm_delete_user'):
+            confirmed = st.checkbox('أؤكد أنني أريد حذف هذا الحساب نهائيًا')
+            submitted = st.form_submit_button('🗑️ حذف الحساب المحدد')
+            if submitted:
+                if not confirmed:
+                    st.error('فعّلي مربع التأكيد أولًا.')
+                elif target['id'] == st.session_state.get('user_id'):
+                    st.error('لا يمكنك حذف حسابك الحالي.')
+                else:
+                    try:
+                        with connect() as c:
+                            if target['role'] == 'admin':
+                                admin_count = c.execute("SELECT COUNT(*) FROM users WHERE role='admin' AND active=1").fetchone()[0]
+                                if admin_count <= 1:
+                                    raise ValueError('لا يمكن حذف آخر حساب إدارة نشط.')
+                            if target['role'] == 'teacher':
+                                has_lessons = c.execute('SELECT 1 FROM timetable WHERE teacher_id=? LIMIT 1', (target['id'],)).fetchone()
+                                has_tasks = c.execute('SELECT 1 FROM tasks WHERE teacher_id=? LIMIT 1', (target['id'],)).fetchone()
+                                if has_lessons or has_tasks:
+                                    raise ValueError('المعلمة مرتبطة بحصص أو واجبات؛ يجب معالجة هذه الارتباطات أولًا.')
+                            c.execute('DELETE FROM sms_verifications WHERE user_id=?', (target['id'],))
+                            c.execute('DELETE FROM activation_codes WHERE user_id=?', (target['id'],))
+                            c.execute('DELETE FROM users WHERE id=?', (target['id'],))
+                        st.success('تم حذف الحساب بنجاح.')
+                        st.rerun()
+                    except (sqlite3.IntegrityError, ValueError) as exc:
+                        st.error(f'تعذر حذف الحساب: {exc}')
+
     st.markdown('#### ربط المعلمات بالفصول')
     teachers = fetch('SELECT id,full_name,username FROM users WHERE role="teacher" AND active=1 ORDER BY full_name')
     teacher_map = {f"{t['full_name']} ({t['username']})": t['id'] for t in teachers}
